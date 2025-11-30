@@ -10,10 +10,11 @@ import (
 
 // Message is the control payload exchanged over the websocket.
 type Message struct {
-	Type   string `json:"type"`
-	Rate   int64  `json:"rate,omitempty"`
-	Runway string `json:"runway,omitempty"`
-	Closed bool   `json:"closed,omitempty"`
+	Type   string     `json:"type"`
+	Rate   int64      `json:"rate,omitempty"`
+	Runway string     `json:"runway,omitempty"`
+	Closed bool       `json:"closed,omitempty"`
+	Wind   *WindState `json:"wind,omitempty"`
 }
 
 // Server hosts control endpoints for updating the generator.
@@ -56,6 +57,13 @@ func (s *Server) HandleControl(w http.ResponseWriter, r *http.Request) {
 			log.Printf("send initial runway: %v", err)
 			return
 		}
+
+		wind := s.Runways.Wind()
+		windState := Message{Type: "wind", Wind: &wind}
+		if err := conn.WriteJSON(windState); err != nil {
+			log.Printf("send initial wind: %v", err)
+			return
+		}
 	}
 
 	for {
@@ -76,6 +84,15 @@ func (s *Server) HandleControl(w http.ResponseWriter, r *http.Request) {
 				s.Runways.SetRunwayClosed(msg.Runway, msg.Closed)
 				if err := conn.WriteJSON(Message{Type: "runway", Runway: msg.Runway, Closed: s.Runways.IsClosed(msg.Runway)}); err != nil {
 					log.Printf("control runway ack error: %v", err)
+					return
+				}
+			}
+		case "wind":
+			if s.Runways != nil && msg.Wind != nil {
+				s.Runways.SetWind(msg.Wind.Speed, msg.Wind.Direction)
+				latest := s.Runways.Wind()
+				if err := conn.WriteJSON(Message{Type: "wind", Wind: &latest}); err != nil {
+					log.Printf("control wind ack error: %v", err)
 					return
 				}
 			}
