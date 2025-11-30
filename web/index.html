@@ -14,6 +14,7 @@
       .status { margin-top: 16px; font-size: 14px; color: #2f855a; }
       .log { margin-top: 24px; background: #0b1221; color: #d7e3ff; padding: 12px; height: 200px; overflow-y: auto; border-radius: 8px; font-family: Menlo, monospace; font-size: 12px; }
       .control-row { margin-top: 16px; }
+      .wind-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       button { padding: 10px 14px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
       .danger { background: #c53030; color: #fff; }
       .safe { background: #2c5282; color: #fff; }
@@ -30,6 +31,18 @@
         <div class="control-row">
           <button id="runway2lToggle" class="danger">Close Runway 2L</button>
         </div>
+        <div class="control-row wind-row">
+          <div>
+            <label for="windSpeed">Wind Speed (kts)</label>
+            <input id="windSpeed" type="number" min="0" max="80" step="1" value="8" />
+            <div class="value">Blowing <span id="windSpeedValue">8</span> kts</div>
+          </div>
+          <div>
+            <label for="windDirection">Wind Direction (°)</label>
+            <input id="windDirection" type="range" min="0" max="359" step="1" value="20" />
+            <div class="value">From <span id="windDirectionValue">20</span>°</div>
+          </div>
+        </div>
       </section>
       <div class="log" id="log"></div>
     </div>
@@ -39,9 +52,14 @@
       const status = document.getElementById('status');
       const logBox = document.getElementById('log');
       const runwayToggle = document.getElementById('runway2lToggle');
+      const windSpeed = document.getElementById('windSpeed');
+      const windSpeedValue = document.getElementById('windSpeedValue');
+      const windDirection = document.getElementById('windDirection');
+      const windDirectionValue = document.getElementById('windDirectionValue');
 
       let socket;
       let runwayClosed = false;
+      let wind = { speed: 8, direction: 20 };
 
       function log(message) {
         const time = new Date().toLocaleTimeString();
@@ -68,6 +86,7 @@
           log('control channel connected');
           sendRate(parseInt(slider.value, 10));
           sendRunwayStatus(runwayClosed);
+          sendWind(wind.speed, wind.direction);
         });
 
         socket.addEventListener('message', (event) => {
@@ -83,6 +102,16 @@
             updateRunwayButton();
             const stateLabel = runwayClosed ? 'closed' : 'open';
             log(`runway 2L is now ${stateLabel}`);
+          }
+
+          if (msg.type === 'wind' && msg.wind) {
+            const { speed, direction } = msg.wind;
+            wind = { speed, direction };
+            windSpeed.value = speed;
+            windSpeedValue.textContent = speed;
+            windDirection.value = direction;
+            windDirectionValue.textContent = direction;
+            log(`wind updated -> ${speed}kts from ${direction}°`);
           }
         });
 
@@ -117,6 +146,16 @@
         log(`sent runway 2L status -> ${closed ? 'closed' : 'open'}`);
       }
 
+      function sendWind(speed, direction) {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          log('control channel not ready; skipping wind update');
+          return;
+        }
+        const payload = { type: 'wind', wind: { speed, direction } };
+        socket.send(JSON.stringify(payload));
+        log(`sent wind update -> ${speed}kts from ${direction}°`);
+      }
+
       slider.addEventListener('input', (event) => {
         const rate = parseInt(event.target.value, 10);
         rateValue.textContent = rate;
@@ -129,8 +168,30 @@
         sendRunwayStatus(runwayClosed);
       });
 
+      windSpeed.addEventListener('change', (event) => {
+        const speed = parseInt(event.target.value, 10) || 0;
+        wind.speed = speed;
+        windSpeedValue.textContent = speed;
+        sendWind(wind.speed, wind.direction);
+      });
+
+      windDirection.addEventListener('input', (event) => {
+        const direction = parseInt(event.target.value, 10) || 0;
+        wind.direction = direction;
+        windDirectionValue.textContent = direction;
+      });
+
+      windDirection.addEventListener('change', (event) => {
+        const direction = parseInt(event.target.value, 10) || 0;
+        wind.direction = direction;
+        windDirectionValue.textContent = direction;
+        sendWind(wind.speed, wind.direction);
+      });
+
       connect();
       updateRunwayButton();
+      windSpeedValue.textContent = wind.speed;
+      windDirectionValue.textContent = wind.direction;
     </script>
   </body>
 </html>
