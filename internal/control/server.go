@@ -10,20 +10,24 @@ import (
 
 // Message is the control payload exchanged over the websocket.
 type Message struct {
-	Type string `json:"type"`
-	Rate int64  `json:"rate,omitempty"`
+	Type   string `json:"type"`
+	Rate   int64  `json:"rate,omitempty"`
+	Runway string `json:"runway,omitempty"`
+	Closed bool   `json:"closed,omitempty"`
 }
 
 // Server hosts control endpoints for updating the generator.
 type Server struct {
 	Generator *Generator
+	Runways   *RunwayManager
 	upgrader  websocket.Upgrader
 }
 
 // NewServer constructs a Server bound to the supplied generator.
-func NewServer(gen *Generator) *Server {
+func NewServer(gen *Generator, runways *RunwayManager) *Server {
 	return &Server{
 		Generator: gen,
+		Runways:   runways,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -39,11 +43,19 @@ func (s *Server) HandleControl(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Send initial rate to client.
-	initial := Message{Type: "rate", Rate: s.Generator.Rate()}
-	if err := conn.WriteJSON(initial); err != nil {
+	// Send initial state to client.
+	initialRate := Message{Type: "rate", Rate: s.Generator.Rate()}
+	if err := conn.WriteJSON(initialRate); err != nil {
 		log.Printf("send initial rate: %v", err)
 		return
+	}
+
+	if s.Runways != nil {
+		runwayState := Message{Type: "runway", Runway: "2L", Closed: s.Runways.IsClosed("2L")}
+		if err := conn.WriteJSON(runwayState); err != nil {
+			log.Printf("send initial runway: %v", err)
+			return
+		}
 	}
 
 	for {
@@ -52,11 +64,20 @@ func (s *Server) HandleControl(w http.ResponseWriter, r *http.Request) {
 			log.Printf("control read error: %v", err)
 			return
 		}
-		if msg.Type == "rate" {
+		switch msg.Type {
+		case "rate":
 			s.Generator.SetRate(msg.Rate)
 			if err := conn.WriteJSON(Message{Type: "rate", Rate: s.Generator.Rate()}); err != nil {
 				log.Printf("control ack error: %v", err)
 				return
+			}
+		case "runway":
+			if s.Runways != nil && msg.Runway != "" {
+				s.Runways.SetRunwayClosed(msg.Runway, msg.Closed)
+				if err := conn.WriteJSON(Message{Type: "runway", Runway: msg.Runway, Closed: s.Runways.IsClosed(msg.Runway)}); err != nil {
+					log.Printf("control runway ack error: %v", err)
+					return
+				}
 			}
 		}
 	}
