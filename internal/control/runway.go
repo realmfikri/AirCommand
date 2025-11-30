@@ -5,7 +5,10 @@ import (
 	"log"
 	"math"
 	"sync"
+	"time"
 )
+
+const minArrivalSpacing = 2 * time.Second
 
 // RunwayManager tracks runway availability and assigns inbound flights.
 type RunwayManager struct {
@@ -17,6 +20,8 @@ type RunwayManager struct {
 	order    []string
 	nextIdx  int
 	wind     WindState
+	metrics  *SchedulerMetrics
+	lastUse  map[string]time.Time
 }
 
 // WindState captures the current wind speed (knots) and direction (degrees true).
@@ -38,13 +43,15 @@ type runwayState struct {
 }
 
 // NewRunwayManager constructs a RunwayManager for the supplied runway names.
-func NewRunwayManager(runways []RunwayDefinition) *RunwayManager {
+func NewRunwayManager(runways []RunwayDefinition, metrics *SchedulerMetrics) *RunwayManager {
 	rm := &RunwayManager{
 		runways:  make(map[string]*runwayState, len(runways)),
 		assigned: make(map[string][]Flight, len(runways)),
 		vectors:  make(map[int64]float64),
 		order:    make([]string, 0, len(runways)),
 		wind:     WindState{Speed: 0, Direction: 0},
+		lastUse:  make(map[string]time.Time, len(runways)),
+		metrics:  metrics,
 	}
 	for _, r := range runways {
 		rm.runways[r.Name] = &runwayState{definition: r, open: true, activeHeading: normalizeHeading(r.Heading)}
@@ -82,6 +89,8 @@ func (rm *RunwayManager) AssignFlight(f Flight) {
 	runway := rm.nextRunway()
 	if runway == "" {
 		rm.holding = append(rm.holding, f)
+		rm.recordHoldingLocked(1)
+		rm.publishHoldingLocked()
 		log.Printf("flight %d (%s) holding: no runway available", f.ID, f.Call)
 		return
 	}
@@ -89,7 +98,14 @@ func (rm *RunwayManager) AssignFlight(f Flight) {
 	rm.assigned[runway] = append(rm.assigned[runway], f)
 	targetHeading := rm.runways[runway].activeHeading
 	rm.vectors[f.ID] = rm.smoothVector(rm.vectors[f.ID], targetHeading)
+	rm.recordAssignmentLocked(time.Since(f.CreatedAt))
+	rm.detectConflictLocked(runway)
+	rm.lastUse[runway] = time.Now()
+	rm.publishQueuesLocked(runway)
 	log.Printf("flight %d (%s) assigned to %s on heading %.0f°", f.ID, f.Call, runway, rm.vectors[f.ID])
+
+	assignedAt := time.Now()
+	go rm.completeLanding(runway, f, assignedAt)
 }
 
 // SetRunwayClosed updates the runway state and handles diversion logic.
@@ -113,6 +129,9 @@ func (rm *RunwayManager) SetRunwayClosed(runway string, closed bool) {
 		if len(diverted) > 0 {
 			rm.holding = append(rm.holding, diverted...)
 			rm.assigned[runway] = nil
+			rm.publishQueuesLocked(runway)
+			rm.recordHoldingLocked(len(diverted))
+			rm.publishHoldingLocked()
 			log.Printf("runway %s closed; diverted %d flights to holding", runway, len(diverted))
 		} else {
 			log.Printf("runway %s closed", runway)
@@ -129,6 +148,7 @@ func (rm *RunwayManager) SetRunwayClosed(runway string, closed bool) {
 	r.open = true
 	holding := rm.holding
 	rm.holding = nil
+	rm.publishHoldingLocked()
 	rm.mu.Unlock()
 
 	log.Printf("runway %s reopened; reassigning %d holding flights", runway, len(holding))
@@ -147,6 +167,16 @@ func (rm *RunwayManager) IsClosed(runway string) bool {
 		return false
 	}
 	return !state.open
+}
+
+// RunwayNames returns the known runway identifiers in scheduling order.
+func (rm *RunwayManager) RunwayNames() []string {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	names := make([]string, len(rm.order))
+	copy(names, rm.order)
+	return names
 }
 
 func (rm *RunwayManager) nextRunway() string {
@@ -233,6 +263,71 @@ func (rm *RunwayManager) smoothVector(current, target float64) float64 {
 		delta = math.Copysign(maxChange, delta)
 	}
 	return normalizeHeading(current + delta)
+}
+
+func (rm *RunwayManager) recordAssignmentLocked(wait time.Duration) {
+	if rm.metrics == nil {
+		return
+	}
+	rm.metrics.RecordAssignment(wait)
+}
+
+func (rm *RunwayManager) recordHoldingLocked(count int) {
+	if rm.metrics == nil {
+		return
+	}
+	for i := 0; i < count; i++ {
+		rm.metrics.RecordHoldingPattern()
+	}
+}
+
+func (rm *RunwayManager) publishHoldingLocked() {
+	if rm.metrics == nil {
+		return
+	}
+	rm.metrics.SetHolding(len(rm.holding))
+}
+
+func (rm *RunwayManager) publishQueuesLocked(runway string) {
+	if rm.metrics == nil {
+		return
+	}
+	rm.metrics.UpdateQueueLength(runway, len(rm.assigned[runway]))
+}
+
+func (rm *RunwayManager) detectConflictLocked(runway string) {
+	last, ok := rm.lastUse[runway]
+	if !ok {
+		return
+	}
+	delta := time.Since(last)
+	if delta < minArrivalSpacing {
+		if rm.metrics != nil {
+			rm.metrics.RecordConflict()
+		}
+		log.Printf("spacing conflict detected on %s (%.1fs apart)", runway, delta.Seconds())
+	}
+}
+
+func (rm *RunwayManager) completeLanding(runway string, f Flight, assignedAt time.Time) {
+	const landingDuration = 5 * time.Second
+	time.Sleep(landingDuration)
+
+	rm.mu.Lock()
+	queue := rm.assigned[runway]
+	for i, candidate := range queue {
+		if candidate.ID == f.ID {
+			queue = append(queue[:i], queue[i+1:]...)
+			break
+		}
+	}
+	rm.assigned[runway] = queue
+	rm.publishQueuesLocked(runway)
+	rm.mu.Unlock()
+
+	if rm.metrics != nil {
+		rm.metrics.RecordLanding(time.Since(assignedAt))
+	}
 }
 
 func normalizeHeading(deg float64) float64 {

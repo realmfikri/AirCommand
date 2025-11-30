@@ -18,6 +18,14 @@
       button { padding: 10px 14px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
       .danger { background: #c53030; color: #fff; }
       .safe { background: #2c5282; color: #fff; }
+      .preset-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+      .preset-row button { background: #1a365d; color: #fff; }
+      .metrics { margin-top: 24px; }
+      .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 12px; }
+      .metric-card { background: #f7fafc; border: 1px solid #e2e8f0; padding: 10px; border-radius: 8px; }
+      .metric-title { font-size: 13px; color: #4a5568; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.02em; }
+      .metric-value { font-size: 18px; font-weight: 700; color: #1a202c; }
+      .queue-list { margin: 8px 0 0; padding: 0; list-style: none; font-family: Menlo, monospace; font-size: 12px; }
     </style>
   </head>
   <body>
@@ -43,6 +51,47 @@
             <div class="value">From <span id="windDirectionValue">20</span>°</div>
           </div>
         </div>
+        <div class="control-row">
+          <label>Stress presets</label>
+          <div class="preset-row">
+            <button data-preset="normal">Normal</button>
+            <button data-preset="heavy">Heavy</button>
+            <button data-preset="max">Max</button>
+          </div>
+        </div>
+      </section>
+      <section class="metrics">
+        <h3>Scheduler metrics</h3>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-title">Arrivals</div>
+            <div class="metric-value" id="totalArrivals">0</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-title">Avg Wait (s)</div>
+            <div class="metric-value" id="avgWait">0</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-title">Avg Landing (s)</div>
+            <div class="metric-value" id="avgLanding">0</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-title">Holding (now)</div>
+            <div class="metric-value" id="holdingCurrent">0</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-title">Holding (total)</div>
+            <div class="metric-value" id="holdingTotal">0</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-title">Conflicts</div>
+            <div class="metric-value" id="conflicts">0</div>
+          </div>
+        </div>
+        <div class="metric-card" style="margin-top: 12px;">
+          <div class="metric-title">Queue lengths</div>
+          <ul class="queue-list" id="queueList"></ul>
+        </div>
       </section>
       <div class="log" id="log"></div>
     </div>
@@ -56,15 +105,63 @@
       const windSpeedValue = document.getElementById('windSpeedValue');
       const windDirection = document.getElementById('windDirection');
       const windDirectionValue = document.getElementById('windDirectionValue');
+      const presetButtons = document.querySelectorAll('[data-preset]');
+      const metricEls = {
+        totalArrivals: document.getElementById('totalArrivals'),
+        avgWait: document.getElementById('avgWait'),
+        avgLanding: document.getElementById('avgLanding'),
+        holdingCurrent: document.getElementById('holdingCurrent'),
+        holdingTotal: document.getElementById('holdingTotal'),
+        conflicts: document.getElementById('conflicts'),
+      };
+      const queueList = document.getElementById('queueList');
 
       let socket;
       let runwayClosed = false;
       let wind = { speed: 8, direction: 20 };
+      const presets = {
+        normal: { label: 'Normal', rate: 8, wind: { speed: 10, direction: 20 }, runwayClosed: false },
+        heavy: { label: 'Heavy', rate: 25, wind: { speed: 18, direction: 210 }, runwayClosed: false },
+        max: { label: 'Max', rate: 45, wind: { speed: 28, direction: 250 }, runwayClosed: true },
+      };
 
       function log(message) {
         const time = new Date().toLocaleTimeString();
         const line = `[${time}] ${message}`;
         logBox.textContent = `${line}\n${logBox.textContent}`;
+      }
+
+      function updateQueueList(queues) {
+        queueList.innerHTML = '';
+        const entries = Object.entries(queues || {});
+        if (!entries.length) {
+          queueList.innerHTML = '<li>n/a</li>';
+          return;
+        }
+        entries
+          .sort(([a], [b]) => a.localeCompare(b))
+          .forEach(([runway, count]) => {
+            const li = document.createElement('li');
+            li.textContent = `${runway}: ${count} in queue`;
+            queueList.appendChild(li);
+          });
+      }
+
+      async function refreshMetrics() {
+        try {
+          const response = await fetch('/metrics');
+          if (!response.ok) throw new Error('metrics unavailable');
+          const data = await response.json();
+          metricEls.totalArrivals.textContent = data.totalArrivals ?? 0;
+          metricEls.avgWait.textContent = (data.averageWaitSeconds || 0).toFixed(2);
+          metricEls.avgLanding.textContent = (data.averageLandingSeconds || 0).toFixed(2);
+          metricEls.holdingCurrent.textContent = data.holdingCurrent ?? 0;
+          metricEls.holdingTotal.textContent = data.holdingPatterns ?? 0;
+          metricEls.conflicts.textContent = data.conflicts ?? 0;
+          updateQueueList(data.queueLengths || {});
+        } catch (err) {
+          status.textContent = 'Metrics unavailable';
+        }
       }
 
       function updateRunwayButton() {
@@ -77,6 +174,24 @@
           runwayToggle.classList.remove('danger');
           runwayToggle.classList.add('safe');
         }
+      }
+
+      function applyPreset(name) {
+        const preset = presets[name];
+        if (!preset) return;
+        slider.value = preset.rate;
+        rateValue.textContent = preset.rate;
+        windSpeed.value = preset.wind.speed;
+        windSpeedValue.textContent = preset.wind.speed;
+        windDirection.value = preset.wind.direction;
+        windDirectionValue.textContent = preset.wind.direction;
+        wind = { ...preset.wind };
+        runwayClosed = preset.runwayClosed;
+        updateRunwayButton();
+        sendRate(preset.rate);
+        sendWind(wind.speed, wind.direction);
+        sendRunwayStatus(runwayClosed);
+        log(`applied ${preset.label} preset`);
       }
 
       function connect() {
@@ -188,10 +303,16 @@
         sendWind(wind.speed, wind.direction);
       });
 
+      presetButtons.forEach((btn) => {
+        btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
+      });
+
       connect();
       updateRunwayButton();
       windSpeedValue.textContent = wind.speed;
       windDirectionValue.textContent = wind.direction;
+      refreshMetrics();
+      setInterval(refreshMetrics, 2000);
     </script>
   </body>
 </html>

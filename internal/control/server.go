@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
@@ -21,14 +22,16 @@ type Message struct {
 type Server struct {
 	Generator *Generator
 	Runways   *RunwayManager
+	Metrics   *SchedulerMetrics
 	upgrader  websocket.Upgrader
 }
 
 // NewServer constructs a Server bound to the supplied generator.
-func NewServer(gen *Generator, runways *RunwayManager) *Server {
+func NewServer(gen *Generator, runways *RunwayManager, metrics *SchedulerMetrics) *Server {
 	return &Server{
 		Generator: gen,
 		Runways:   runways,
+		Metrics:   metrics,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -52,10 +55,12 @@ func (s *Server) HandleControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.Runways != nil {
-		runwayState := Message{Type: "runway", Runway: "2L", Closed: s.Runways.IsClosed("2L")}
-		if err := conn.WriteJSON(runwayState); err != nil {
-			log.Printf("send initial runway: %v", err)
-			return
+		for _, name := range s.Runways.RunwayNames() {
+			runwayState := Message{Type: "runway", Runway: name, Closed: s.Runways.IsClosed(name)}
+			if err := conn.WriteJSON(runwayState); err != nil {
+				log.Printf("send initial runway %s: %v", name, err)
+				return
+			}
 		}
 
 		wind := s.Runways.Wind()
@@ -110,4 +115,17 @@ func (s *Server) HandleRate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Generator.SetRate(rate)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleMetrics emits a snapshot of scheduler behavior for dashboards or tests.
+func (s *Server) HandleMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.Metrics == nil {
+		http.Error(w, "metrics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	snapshot := s.Metrics.Snapshot()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
+		log.Printf("encode metrics: %v", err)
+	}
 }
