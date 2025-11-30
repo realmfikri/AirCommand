@@ -44,8 +44,9 @@ func (g *Generator) Rate() int64 {
 
 // Flight represents a generated flight payload.
 type Flight struct {
-	ID   int64  `json:"id"`
-	Call string `json:"call"`
+	ID        int64     `json:"id"`
+	Call      string    `json:"call"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // Run starts generating flights until the context is canceled.
@@ -75,7 +76,8 @@ func (g *Generator) interval() time.Duration {
 func (g *Generator) spawn() Flight {
 	id := g.nextID.Add(1)
 	return Flight{
-		ID:   id,
-		Call: "FLT" + time.Now().Format("150405") + "-" + fmt.Sprintf("%04d", id%10000),
+		ID:        id,
+		Call:      "FLT" + time.Now().Format("150405") + "-" + fmt.Sprintf("%04d", id%10000),
+		CreatedAt: time.Now(),
 	}
 }

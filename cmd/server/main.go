@@ -20,15 +20,18 @@ func main() {
 	flights := make(chan control.Flight, 16)
 	go generator.Run(ctx, flights)
 
-	runways := control.NewRunwayManager([]control.RunwayDefinition{{Name: "2L", Heading: 20}, {Name: "2R", Heading: 20}})
+	runwayDefs := []control.RunwayDefinition{{Name: "2L", Heading: 20}, {Name: "2R", Heading: 20}}
+	metrics := control.NewSchedulerMetrics([]string{"2L", "2R"})
+	runways := control.NewRunwayManager(runwayDefs, metrics)
 	runways.SetWind(8, 20)
 	go runways.Run(ctx, flights)
 
-	server := control.NewServer(generator, runways)
+	server := control.NewServer(generator, runways, metrics)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/control", server.HandleControl)
 	mux.HandleFunc("/rate", server.HandleRate)
+	mux.HandleFunc("/metrics", server.HandleMetrics)
 	mux.HandleFunc("/", serveIndex)
 
 	srv := &http.Server{Addr: ":8080", Handler: mux}
