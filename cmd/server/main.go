@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -20,9 +19,11 @@ func main() {
 	generator := control.NewGenerator(5) // default 5 planes/minute
 	flights := make(chan control.Flight, 16)
 	go generator.Run(ctx, flights)
-	go logFlights(ctx, flights)
 
-	server := control.NewServer(generator)
+	runways := control.NewRunwayManager([]string{"2L", "2R"})
+	go runways.Run(ctx, flights)
+
+	server := control.NewServer(generator, runways)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/control", server.HandleControl)
@@ -46,20 +47,6 @@ func main() {
 	}
 }
 
-func logFlights(ctx context.Context, flights <-chan control.Flight) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case f, ok := <-flights:
-			if !ok {
-				return
-			}
-			log.Printf("spawned flight %d (%s)", f.ID, f.Call)
-		}
-	}
-}
-
 func serveIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -72,10 +59,4 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html")
 	w.Write(data)
-}
-
-// Helper for debugging JSON payloads in logs.
-func logJSON(label string, v any) {
-	b, _ := json.Marshal(v)
-	log.Printf("%s: %s", label, b)
 }

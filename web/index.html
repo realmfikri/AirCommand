@@ -13,6 +13,10 @@
       .value { font-size: 14px; color: #444; margin-top: 6px; }
       .status { margin-top: 16px; font-size: 14px; color: #2f855a; }
       .log { margin-top: 24px; background: #0b1221; color: #d7e3ff; padding: 12px; height: 200px; overflow-y: auto; border-radius: 8px; font-family: Menlo, monospace; font-size: 12px; }
+      .control-row { margin-top: 16px; }
+      button { padding: 10px 14px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+      .danger { background: #c53030; color: #fff; }
+      .safe { background: #2c5282; color: #fff; }
     </style>
   </head>
   <body>
@@ -23,6 +27,9 @@
         <input id="arrivalRate" type="range" min="1" max="60" step="1" value="5" />
         <div class="value">Current rate: <span id="rateValue">5</span> planes/min</div>
         <div class="status" id="status"></div>
+        <div class="control-row">
+          <button id="runway2lToggle" class="danger">Close Runway 2L</button>
+        </div>
       </section>
       <div class="log" id="log"></div>
     </div>
@@ -31,13 +38,27 @@
       const rateValue = document.getElementById('rateValue');
       const status = document.getElementById('status');
       const logBox = document.getElementById('log');
+      const runwayToggle = document.getElementById('runway2lToggle');
 
       let socket;
+      let runwayClosed = false;
 
       function log(message) {
         const time = new Date().toLocaleTimeString();
         const line = `[${time}] ${message}`;
         logBox.textContent = `${line}\n${logBox.textContent}`;
+      }
+
+      function updateRunwayButton() {
+        if (runwayClosed) {
+          runwayToggle.textContent = 'Reopen Runway 2L';
+          runwayToggle.classList.remove('safe');
+          runwayToggle.classList.add('danger');
+        } else {
+          runwayToggle.textContent = 'Close Runway 2L';
+          runwayToggle.classList.remove('danger');
+          runwayToggle.classList.add('safe');
+        }
       }
 
       function connect() {
@@ -46,6 +67,7 @@
           status.textContent = 'Connected to control channel';
           log('control channel connected');
           sendRate(parseInt(slider.value, 10));
+          sendRunwayStatus(runwayClosed);
         });
 
         socket.addEventListener('message', (event) => {
@@ -54,6 +76,13 @@
             slider.value = msg.rate;
             rateValue.textContent = msg.rate;
             log(`rate acknowledged at ${msg.rate} planes/min`);
+          }
+
+          if (msg.type === 'runway' && msg.runway === '2L') {
+            runwayClosed = !!msg.closed;
+            updateRunwayButton();
+            const stateLabel = runwayClosed ? 'closed' : 'open';
+            log(`runway 2L is now ${stateLabel}`);
           }
         });
 
@@ -78,13 +107,30 @@
         log(`sent rate update -> ${rate} planes/min`);
       }
 
+      function sendRunwayStatus(closed) {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          log('control channel not ready; skipping runway update');
+          return;
+        }
+        const payload = { type: 'runway', runway: '2L', closed };
+        socket.send(JSON.stringify(payload));
+        log(`sent runway 2L status -> ${closed ? 'closed' : 'open'}`);
+      }
+
       slider.addEventListener('input', (event) => {
         const rate = parseInt(event.target.value, 10);
         rateValue.textContent = rate;
         sendRate(rate);
       });
 
+      runwayToggle.addEventListener('click', () => {
+        runwayClosed = !runwayClosed;
+        updateRunwayButton();
+        sendRunwayStatus(runwayClosed);
+      });
+
       connect();
+      updateRunwayButton();
     </script>
   </body>
 </html>
