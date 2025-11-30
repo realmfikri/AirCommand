@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AirCommand Control Panel</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; padding: 24px; background: #f2f4f7; }
+      .panel { max-width: 640px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
+      h1 { margin-top: 0; }
+      label { display: block; font-weight: 600; margin-bottom: 8px; }
+      input[type=range] { width: 100%; }
+      .value { font-size: 14px; color: #444; margin-top: 6px; }
+      .status { margin-top: 16px; font-size: 14px; color: #2f855a; }
+      .log { margin-top: 24px; background: #0b1221; color: #d7e3ff; padding: 12px; height: 200px; overflow-y: auto; border-radius: 8px; font-family: Menlo, monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <h1>AirCommand Control Panel</h1>
+      <section>
+        <label for="arrivalRate">Arrival Rate (planes/min)</label>
+        <input id="arrivalRate" type="range" min="1" max="60" step="1" value="5" />
+        <div class="value">Current rate: <span id="rateValue">5</span> planes/min</div>
+        <div class="status" id="status"></div>
+      </section>
+      <div class="log" id="log"></div>
+    </div>
+    <script>
+      const slider = document.getElementById('arrivalRate');
+      const rateValue = document.getElementById('rateValue');
+      const status = document.getElementById('status');
+      const logBox = document.getElementById('log');
+
+      let socket;
+
+      function log(message) {
+        const time = new Date().toLocaleTimeString();
+        const line = `[${time}] ${message}`;
+        logBox.textContent = `${line}\n${logBox.textContent}`;
+      }
+
+      function connect() {
+        socket = new WebSocket(`ws://${location.host}/control`);
+        socket.addEventListener('open', () => {
+          status.textContent = 'Connected to control channel';
+          log('control channel connected');
+          sendRate(parseInt(slider.value, 10));
+        });
+
+        socket.addEventListener('message', (event) => {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'rate') {
+            slider.value = msg.rate;
+            rateValue.textContent = msg.rate;
+            log(`rate acknowledged at ${msg.rate} planes/min`);
+          }
+        });
+
+        socket.addEventListener('close', () => {
+          status.textContent = 'Disconnected. Reconnecting...';
+          log('control channel closed');
+          setTimeout(connect, 1500);
+        });
+
+        socket.addEventListener('error', (err) => {
+          log(`websocket error: ${err.message || err}`);
+        });
+      }
+
+      function sendRate(rate) {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          log('control channel not ready; skipping rate send');
+          return;
+        }
+        const payload = { type: 'rate', rate };
+        socket.send(JSON.stringify(payload));
+        log(`sent rate update -> ${rate} planes/min`);
+      }
+
+      slider.addEventListener('input', (event) => {
+        const rate = parseInt(event.target.value, 10);
+        rateValue.textContent = rate;
+        sendRate(rate);
+      });
+
+      connect();
+    </script>
+  </body>
+</html>
